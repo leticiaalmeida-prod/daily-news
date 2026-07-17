@@ -43,13 +43,16 @@ NEWS_QUERY = (
 class RateLimiter:
     """Per-user sliding-window limiter — protects LLM spend from a chatty user.
 
-    NOT currently wired into api/webhook.py: each invocation is a fresh,
-    stateless serverless function, so in-memory state here wouldn't reliably
-    persist between messages anyway (no shared memory across invocations,
-    unlike the old always-on long-polling process this replaced). Kept as a
-    tested, reusable primitive in case a persistent store (e.g. Vercel KV)
-    backs it later — for a single-user personal bot, dropping rate-limiting
-    entirely for now is a low-risk simplification, not an oversight.
+    api/webhook.py holds ONE instance at module level (not per-request) —
+    same pattern as GeckoVision/ayuda-venezuela-bot's own Vercel webhook
+    (app/api/telegram/route.ts's ``chatHits`` Map). Vercel reuses a "warm"
+    function instance across nearby invocations, so this in-memory state
+    persists there; it's best-effort, not guaranteed (a cold start or a
+    scaled-out concurrent instance gets its own fresh state), but that's the
+    same tradeoff the reference bot accepted — real protection most of the
+    time beats none. ``limiter=None`` (accepted by ``handle_message``/
+    ``handle_command``) skips the check entirely, for callers that don't want
+    it (or a future test/local-dev path).
     """
 
     def __init__(self, max_per_min: int) -> None:

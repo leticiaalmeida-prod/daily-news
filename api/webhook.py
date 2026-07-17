@@ -1,10 +1,14 @@
 """Vercel serverless function — Telegram webhook endpoint.
 
 Telegram POSTs one update here per incoming message (see
-scripts/set_webhook.py for registering this URL). Each invocation is
-stateless and handles exactly one update — no persistent process, no event
-loop, no rate limiter (see bot/bot.py's RateLimiter docstring for why that's
-a deliberate simplification here, not an oversight).
+scripts/set_webhook.py for registering this URL). Each invocation handles
+exactly one update — no persistent process, no event loop, and (per
+GeckoVision/ayuda-venezuela-bot's own Vercel webhook, app/api/telegram/
+route.ts) a rate limiter kept as a plain MODULE-LEVEL object rather than
+dropped: Vercel reuses a "warm" function instance across nearby invocations,
+so this in-memory state persists there and gives real (if best-effort, not
+guaranteed across cold starts or scaled-out concurrent instances)
+protection — better than nothing, same tradeoff the reference bot accepted.
 
 Security note: long-polling (the previous deployment target) never exposed a
 public endpoint at all — Telegram was only ever pulled from, never pushed to.
@@ -25,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bot import agent  # noqa: E402
-from bot.bot import WELCOME_MSG, handle_command, handle_message  # noqa: E402
+from bot.bot import WELCOME_MSG, RateLimiter, handle_command, handle_message  # noqa: E402
 from bot.config import SYSTEM_PROMPT, BotConfig  # noqa: E402
 from bot.interests import load_interests  # noqa: E402
 from bot.providers import make_llm  # noqa: E402
@@ -34,12 +38,18 @@ from bot.telegram_api import send_chunked  # noqa: E402
 
 _SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 
+# Module-level (not per-request) so it persists across warm invocations — see
+# module docstring. 8/min matches the reference bot's PER_CHAT_PER_MIN.
+_LIMITER = RateLimiter(max_per_min=8)
+
 
 def _system_prompt() -> str:
     return f"{SYSTEM_PROMPT}\n\nReader's interests profile:\n{load_interests()}"
 
 
-def _reply_for(update: dict, cfg: BotConfig) -> tuple[str, str] | None:
+def _reply_for(
+    update: dict, cfg: BotConfig, *, limiter: RateLimiter | None = _LIMITER
+) -> tuple[str, str] | None:
     """Returns (chat_id, reply_text), or None if there's nothing to reply to
     (not a text message — an edit, a channel post, a photo with no caption,
     etc.)."""
@@ -76,11 +86,11 @@ def _reply_for(update: dict, cfg: BotConfig) -> tuple[str, str] | None:
             # rather than in bot.bot, since only the transport layer knows it.
             return str(chat_id), f"{WELCOME_MSG}\n{chat_id}"
         reply = handle_command(
-            command, user_id, responder=responder, limiter=None, now=time.monotonic()
+            command, user_id, responder=responder, limiter=limiter, now=time.monotonic()
         )
     else:
         reply = handle_message(
-            text, user_id, responder=responder, limiter=None, now=time.monotonic()
+            text, user_id, responder=responder, limiter=limiter, now=time.monotonic()
         )
     return str(chat_id), reply
 

@@ -7,3 +7,13 @@ __pycache__/
 .mypy_cache/
 tests/
 .git/
+# Vercel's Python builder prioritizes pyproject.toml over requirements.txt
+# when both exist, and treats the project as a single-entrypoint app (needs
+# ONE app.py/main.py/etc, or [tool.vercel] entrypoint) rather than
+# auto-discovering each api/*.py as its own function — breaks our two-function
+# (webhook + cron) setup. pyproject.toml/uv.lock are only needed for local uv
+# tooling; hiding them from Vercel restores requirements.txt-based multi-
+# function auto-discovery. See github.com/vercel/vercel/issues/14041.
+pyproject.toml
+uv.lock
+.python-version

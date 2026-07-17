@@ -1,4 +1,5 @@
-"""Vercel serverless function — the scheduled daily digest.
+"""The scheduled daily digest — routed to by api/index.py (see that module's
+docstring for why this isn't its own Vercel Function).
 
 Invoked by Vercel Cron per the schedule in vercel.json (UTC-only; the actual
 local-time reasoning for the schedule lives there, not in this module — see
@@ -12,7 +13,6 @@ from __future__ import annotations
 
 import os
 import sys
-from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -38,14 +38,10 @@ def _run_and_send(cfg: BotConfig) -> None:
     send_chunked(token=cfg.telegram_token, chat_id=cfg.telegram_chat_id, text=digest_text)
 
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        cron_secret = os.environ.get("CRON_SECRET", "")
-        if not cron_secret or self.headers.get("Authorization") != f"Bearer {cron_secret}":
-            self.send_response(401)
-            self.end_headers()
-            return
-
-        _run_and_send(BotConfig.from_env())
-        self.send_response(200)
-        self.end_headers()
+def handle_cron(auth_header: str | None) -> int:
+    """Process one Vercel Cron GET; returns the HTTP status to reply with."""
+    cron_secret = os.environ.get("CRON_SECRET", "")
+    if not cron_secret or auth_header != f"Bearer {cron_secret}":
+        return 401
+    _run_and_send(BotConfig.from_env())
+    return 200

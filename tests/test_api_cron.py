@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from api.cron import _run_and_send
+from api.cron import _run_and_send, handle_cron
 from bot.config import BotConfig
 
 
@@ -44,3 +44,27 @@ def test_generates_and_sends_digest_when_chat_id_set() -> None:
     assert mock_run_digest.call_args.kwargs["tools"] == "fake-tools"
     assert mock_run_digest.call_args.kwargs["llm"] == "fake-llm"
     mock_send.assert_called_once_with(token="TOKEN", chat_id="999", text="the digest text")
+
+
+# --- handle_cron: the WSGI-agnostic entrypoint api/index.py dispatches to ---
+
+
+def test_handle_cron_rejects_missing_secret(monkeypatch) -> None:
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    assert handle_cron("Bearer whatever") == 401
+
+
+def test_handle_cron_rejects_wrong_auth_header(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "right-secret")
+    assert handle_cron("Bearer wrong-secret") == 401
+    assert handle_cron(None) == 401
+
+
+def test_handle_cron_accepts_correct_bearer_token(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "right-secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "w")
+    monkeypatch.setenv("NYT_API_KEY", "n")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)  # -> _run_and_send no-ops
+    assert handle_cron("Bearer right-secret") == 200

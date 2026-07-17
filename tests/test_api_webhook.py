@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
-from api.webhook import _reply_for
+from api.webhook import _reply_for, handle_webhook
 from bot.bot import HELP_MSG, RATE_LIMIT_MSG, RateLimiter
 from bot.config import BotConfig
 
@@ -107,3 +108,47 @@ def test_rate_limited_user_gets_rate_limit_message() -> None:
 
     assert first == ("555", "reply one")
     assert second == ("555", RATE_LIMIT_MSG)
+
+
+# --- handle_webhook: the WSGI-agnostic entrypoint api/index.py dispatches to ---
+
+_ENV = {
+    "TELEGRAM_BOT_TOKEN": "TOKEN",
+    "TELEGRAM_WEBHOOK_SECRET": "correct-secret",
+    "NYT_API_KEY": "nyt",
+    "ANTHROPIC_API_KEY": "anthropic",
+}
+
+
+def _set_env(monkeypatch) -> None:
+    for key, val in _ENV.items():
+        monkeypatch.setenv(key, val)
+
+
+def test_handle_webhook_rejects_wrong_secret(monkeypatch) -> None:
+    _set_env(monkeypatch)
+    status = handle_webhook("wrong-secret", b"{}")
+    assert status == 403
+
+
+def test_handle_webhook_rejects_invalid_json(monkeypatch) -> None:
+    _set_env(monkeypatch)
+    status = handle_webhook("correct-secret", b"not json")
+    assert status == 400
+
+
+def test_handle_webhook_accepts_and_sends_reply(monkeypatch) -> None:
+    _set_env(monkeypatch)
+    body = json.dumps(_message_update(text="/help")).encode()
+    with patch("api.webhook.send_chunked") as mock_send:
+        status = handle_webhook("correct-secret", body)
+    assert status == 200
+    mock_send.assert_called_once_with(token="TOKEN", chat_id="555", text=HELP_MSG)
+
+
+def test_handle_webhook_empty_body_still_returns_200(monkeypatch) -> None:
+    _set_env(monkeypatch)
+    with patch("api.webhook.send_chunked") as mock_send:
+        status = handle_webhook("correct-secret", b"")
+    assert status == 200
+    mock_send.assert_not_called()

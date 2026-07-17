@@ -7,10 +7,7 @@
     }
   ],
   "functions": {
-    "api/cron.py": {
-      "maxDuration": 60
-    },
-    "api/webhook.py": {
+    "api/index.py": {
       "maxDuration": 60
     }
   }

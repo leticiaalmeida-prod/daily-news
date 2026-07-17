@@ -6,3 +6,5 @@ __pycache__/
 .mypy_cache/
 .env
 .DS_Store
+.vercel
+.env*

@@ -1,8 +1,11 @@
-"""Vercel serverless function — Telegram webhook endpoint.
+"""Telegram webhook logic — routed to by api/index.py (see that module's
+docstring for why this isn't its own Vercel Function: Vercel's current Python
+builder wants exactly ONE entrypoint per project, not per-file auto-discovery
+under api/, despite older docs describing the latter).
 
-Telegram POSTs one update here per incoming message (see
-scripts/set_webhook.py for registering this URL). Each invocation handles
-exactly one update — no persistent process, no event loop, and (per
+Telegram POSTs one update per incoming message (see scripts/set_webhook.py
+for registering the deployed URL). Each invocation handles exactly one
+update — no persistent process, no event loop, and (per
 GeckoVision/ayuda-venezuela-bot's own Vercel webhook, app/api/telegram/
 route.ts) a rate limiter kept as a plain MODULE-LEVEL object rather than
 dropped: Vercel reuses a "warm" function instance across nearby invocations,
@@ -23,7 +26,6 @@ from __future__ import annotations
 import json
 import sys
 import time
-from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -36,7 +38,7 @@ from bot.providers import make_llm  # noqa: E402
 from bot.surfcall_tools import build_nyt_tools  # noqa: E402
 from bot.telegram_api import send_chunked  # noqa: E402
 
-_SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
+SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 
 # Module-level (not per-request) so it persists across warm invocations — see
 # module docstring. 8/min matches the reference bot's PER_CHAT_PER_MIN.
@@ -95,30 +97,25 @@ def _reply_for(
     return str(chat_id), reply
 
 
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:
-        cfg = BotConfig.from_env()
+def handle_webhook(secret_header: str | None, body: bytes) -> int:
+    """Process one Telegram webhook POST; returns the HTTP status to reply
+    with. Pure aside from env/network I/O — no HTTP framework dependency, so
+    api/index.py's WSGI dispatcher (or a test) can call this directly."""
+    cfg = BotConfig.from_env()
 
-        if self.headers.get(_SECRET_HEADER) != cfg.telegram_webhook_secret:
-            self.send_response(403)
-            self.end_headers()
-            return
+    if secret_header != cfg.telegram_webhook_secret:
+        return 403
 
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else b"{}"
-        try:
-            update = json.loads(body)
-        except json.JSONDecodeError:
-            self.send_response(400)
-            self.end_headers()
-            return
+    try:
+        update = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return 400
 
-        result = _reply_for(update, cfg)
-        if result is not None:
-            chat_id, reply = result
-            send_chunked(token=cfg.telegram_token, chat_id=chat_id, text=reply)
+    result = _reply_for(update, cfg)
+    if result is not None:
+        chat_id, reply = result
+        send_chunked(token=cfg.telegram_token, chat_id=chat_id, text=reply)
 
-        # Always 200 to Telegram once parsed — a slow/failed downstream call
-        # (LLM, NYT) shouldn't make Telegram retry-storm this endpoint.
-        self.send_response(200)
-        self.end_headers()
+    # Always 200 to Telegram once parsed — a slow/failed downstream call
+    # (LLM, NYT) shouldn't make Telegram retry-storm this endpoint.
+    return 200

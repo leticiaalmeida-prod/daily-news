@@ -274,26 +274,41 @@ def comprehend(
     )
 
 
+_RELEVANCE_HEADERS = {
+    "must-read": "🚨 MUST-READ",
+    "relevant": "📌 RELEVANT",
+    "tangential": "🔍 TANGENTIAL",
+}
+
+
+def _format_story(item: DigestItem) -> str:
+    return "\n\n".join(
+        [
+            f"• {item.topic} — {item.candidate.title}",
+            item.why,
+            item.summary,
+            f"({item.explanation_mode.replace('_', ' ')}) {item.neutral_explanation}",
+            item.candidate.url,
+        ]
+    )
+
+
 def format_digest(items: list[DigestItem]) -> str:
-    """Plain-text digest, grouped by relevance (must-read first). Telegram
-    doesn't render Markdown reliably in this context, so no ``**``/``#``."""
+    """Plain-text digest, grouped by relevance (must-read first) under an
+    emoji-labeled header, with a full blank line between every paragraph.
+    Telegram doesn't render Markdown reliably here, so spacing + emoji carry
+    the visual structure instead of ``**``/``#``."""
     if not items:
         return "No stories cleared your interests filter today."
-    lines: list[str] = []
     by_relevance = {r: [i for i in items if i.relevance == r] for r in RELEVANCE_ORDER}
+    sections: list[str] = []
     for relevance in RELEVANCE_ORDER:
         group = by_relevance[relevance]
         if not group:
             continue
-        lines.append(relevance.upper())
-        for item in group:
-            lines.append(f"\n• {item.topic} — {item.candidate.title}")
-            lines.append(item.why)
-            lines.append(item.summary)
-            lines.append(f"({item.explanation_mode.replace('_', ' ')}) {item.neutral_explanation}")
-            lines.append(item.candidate.url)
-        lines.append("")
-    return "\n".join(lines).strip()
+        body = "\n\n".join(_format_story(item) for item in group)
+        sections.append(f"{_RELEVANCE_HEADERS[relevance]}\n\n{body}")
+    return "\n\n".join(sections)
 
 
 COMPREHEND_MAX_WORKERS = 8

@@ -41,7 +41,11 @@ say so rather than padding the answer with tangential stories.
 never describe a story without linking it.
 - Keep answers concise and scannable: a short list of stories, each with a one-line \
 reason it's relevant, followed by its link.
-- Write in plain text: no Markdown formatting (Telegram may not render it here)."""
+- Write in plain text: no Markdown formatting (Telegram may not render it here). Put a \
+full blank line between every story and between paragraphs — never wall-of-text it.
+- Lead each story with an emoji that fits how urgent/relevant it is (e.g. 🚨 for \
+something she should see right now, 📌 for solid but not urgent, 🔍 for a minor/\
+tangential mention) — pick whatever fits the story, don't force the same one every time."""
 
 
 @dataclass(frozen=True)

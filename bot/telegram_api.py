@@ -20,14 +20,58 @@ TELEGRAM_LIMIT = 4096
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
+class TelegramApiError(Exception):
+    """A Telegram Bot API call failed — with the bot token REDACTED.
+
+    httpx's own errors format the request URL into their message, and the
+    Telegram API URL embeds the bot token (``/bot<token>/...``) — so letting
+    an httpx error propagate out of a Vercel function would print the token
+    straight into the deployment logs on any failed send. This error carries
+    only the method name, the HTTP status, and Telegram's own (token-free)
+    ``description`` field; it's raised ``from None`` so a logged traceback
+    can't resurrect the original URL-bearing exception either.
+    """
+
+
+def _describe(resp: httpx.Response) -> str:
+    """Telegram's own error `description` (e.g. "Bad Request: chat not
+    found") — token-free by construction, capped defensively."""
+    try:
+        description = resp.json().get("description", "")
+    except Exception:  # noqa: BLE001 - a non-JSON error body just has no detail
+        return ""
+    if not isinstance(description, str) or not description:
+        return ""
+    return f" — {description[:200]}"
+
+
+def _post(method: str, token: str, payload: dict[str, Any], timeout: float) -> httpx.Response:
+    """POST one Bot API call; any failure raises TelegramApiError (redacted,
+    chain-suppressed) — never an httpx error whose message embeds the URL."""
+    url = _API_BASE.format(token=token, method=method)
+    try:
+        resp = httpx.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise TelegramApiError(
+            f"Telegram {method} failed: HTTP {exc.response.status_code}"
+            f"{_describe(exc.response)}"
+        ) from None
+    except httpx.HTTPError as exc:
+        # Transport-level failure (timeout, DNS, connect) — the exception TYPE
+        # is the useful debugging signal; the message may embed the URL.
+        raise TelegramApiError(
+            f"Telegram {method} request failed: {type(exc).__name__}"
+        ) from None
+    return resp
+
+
 def send_message(*, token: str, chat_id: str, text: str, timeout: float = 20.0) -> None:
-    """Send one message. Raises on a non-2xx response — the caller (a Vercel
-    function) surfaces that as a failed invocation, which is the right
+    """Send one message. Raises TelegramApiError on failure — the caller (a
+    Vercel function) surfaces that as a failed invocation, which is the right
     behavior here (better a visible error in Vercel's logs than a silently
-    dropped message)."""
-    url = _API_BASE.format(token=token, method="sendMessage")
-    resp = httpx.post(url, json={"chat_id": chat_id, "text": text}, timeout=timeout)
-    resp.raise_for_status()
+    dropped message), and the error message never contains the bot token."""
+    _post("sendMessage", token, {"chat_id": chat_id, "text": text}, timeout)
 
 
 def send_chunked(*, token: str, chat_id: str, text: str) -> None:
@@ -43,11 +87,7 @@ def set_webhook(
     ``X-Telegram-Bot-Api-Secret-Token`` header, which api/webhook.py verifies
     before trusting a request body — the one auth check long-polling never
     needed (no public endpoint to spoof in that model)."""
-    api_url = _API_BASE.format(token=token, method="setWebhook")
-    resp = httpx.post(
-        api_url, json={"url": url, "secret_token": secret_token}, timeout=timeout
-    )
-    resp.raise_for_status()
+    resp = _post("setWebhook", token, {"url": url, "secret_token": secret_token}, timeout)
     return resp.json()
 
 

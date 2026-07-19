@@ -1,6 +1,7 @@
 """Configuration + constants for the daily-news Telegram bot.
 
-Secrets come from the environment only (never hardcoded, never logged).
+Secrets come from the OS keychain or the environment (never hardcoded,
+never logged) — see bot/secrets.py for the resolution order.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .providers import DEFAULT_MODEL
+from .secrets import resolve_secret
 
 # Load `.env` (at the project root, not cwd-dependent) into the process
 # environment. `uv run` does NOT do this on its own. `override=False` (the
@@ -62,8 +64,11 @@ class BotConfig:
 
     @classmethod
     def from_env(cls) -> "BotConfig":
-        """Read secrets from the environment. Raises naming only the missing var
-        (never a value), so an error message can't leak a token.
+        """Read secrets — OS keychain first (``gecko auth set daily_news
+        --account <name>``, see bot/secrets.py for the pattern), environment
+        (Vercel env vars / exported shell / ``.env``) as fallback. Raises
+        naming only the missing var (never a value), so an error message
+        can't leak a token.
 
         `TELEGRAM_CHAT_ID` is deliberately NOT required here: on a first run
         you don't have it yet — you get it by messaging the bot `/start`,
@@ -75,14 +80,21 @@ class BotConfig:
         (UTC-only), since Vercel Cron is what decides *when* `api/cron.py`
         gets invoked; this module has no scheduling concept to configure."""
         values = {
-            "TELEGRAM_BOT_TOKEN": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-            "TELEGRAM_WEBHOOK_SECRET": os.environ.get("TELEGRAM_WEBHOOK_SECRET", ""),
-            "NYT_API_KEY": os.environ.get("NYT_API_KEY", ""),
-            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+            name: resolve_secret(name)
+            for name in (
+                "TELEGRAM_BOT_TOKEN",
+                "TELEGRAM_WEBHOOK_SECRET",
+                "NYT_API_KEY",
+                "ANTHROPIC_API_KEY",
+            )
         }
         missing = [name for name, val in values.items() if not val]
         if missing:
-            raise RuntimeError(f"missing environment variable(s): {', '.join(missing)}")
+            raise RuntimeError(
+                f"missing secret(s): {', '.join(missing)} — set as environment "
+                "variables (Vercel / .env), or locally via "
+                "`gecko auth set daily_news --account <name, lowercased>`"
+            )
         return cls(
             telegram_token=values["TELEGRAM_BOT_TOKEN"],
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),

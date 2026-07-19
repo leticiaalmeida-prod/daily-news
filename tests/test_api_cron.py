@@ -60,6 +60,13 @@ def test_handle_cron_rejects_wrong_auth_header(monkeypatch) -> None:
     assert handle_cron(None) == 401
 
 
+def test_handle_cron_rejects_non_ascii_auth_header(monkeypatch) -> None:
+    """The constant-time comparison must reject a hostile non-ASCII header
+    with a 401, never crash — see api/webhook.py's secret check."""
+    monkeypatch.setenv("CRON_SECRET", "right-secret")
+    assert handle_cron("Bearer сёкрет-🔑") == 401
+
+
 def test_handle_cron_accepts_correct_bearer_token(monkeypatch) -> None:
     monkeypatch.setenv("CRON_SECRET", "right-secret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")

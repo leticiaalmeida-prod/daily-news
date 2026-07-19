@@ -11,6 +11,7 @@ this rejects anyone else who finds the URL and GETs it directly.
 
 from __future__ import annotations
 
+import hmac
 import os
 import sys
 from pathlib import Path
@@ -41,7 +42,12 @@ def _run_and_send(cfg: BotConfig) -> None:
 def handle_cron(auth_header: str | None) -> int:
     """Process one Vercel Cron GET; returns the HTTP status to reply with."""
     cron_secret = os.environ.get("CRON_SECRET", "")
-    if not cron_secret or auth_header != f"Bearer {cron_secret}":
+    # Constant-time comparison (see api/webhook.py's secret check for why).
+    if (
+        not cron_secret
+        or auth_header is None
+        or not hmac.compare_digest(auth_header.encode(), f"Bearer {cron_secret}".encode())
+    ):
         return 401
     _run_and_send(BotConfig.from_env())
     return 200

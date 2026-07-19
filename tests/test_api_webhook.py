@@ -131,6 +131,21 @@ def test_handle_webhook_rejects_wrong_secret(monkeypatch) -> None:
     assert status == 403
 
 
+def test_handle_webhook_rejects_missing_secret_header(monkeypatch) -> None:
+    """Telegram always sends the header once set_webhook registered it — a
+    request WITHOUT it is by definition not from Telegram."""
+    _set_env(monkeypatch)
+    assert handle_webhook(None, b"{}") == 403
+
+
+def test_handle_webhook_rejects_non_ascii_secret_header(monkeypatch) -> None:
+    """A hostile header can contain anything; the constant-time comparison
+    must reject it with a 403, never crash (compare_digest rejects non-ASCII
+    str, hence the bytes encoding in handle_webhook)."""
+    _set_env(monkeypatch)
+    assert handle_webhook("сёкрет-🔑", b"{}") == 403
+
+
 def test_handle_webhook_rejects_invalid_json(monkeypatch) -> None:
     _set_env(monkeypatch)
     status = handle_webhook("correct-secret", b"not json")

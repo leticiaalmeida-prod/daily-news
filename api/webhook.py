@@ -23,6 +23,7 @@ the body is trusted at all.
 
 from __future__ import annotations
 
+import hmac
 import json
 import sys
 import time
@@ -103,7 +104,12 @@ def handle_webhook(secret_header: str | None, body: bytes) -> int:
     api/index.py's WSGI dispatcher (or a test) can call this directly."""
     cfg = BotConfig.from_env()
 
-    if secret_header != cfg.telegram_webhook_secret:
+    # Constant-time comparison (not `!=`) so response timing can't be used to
+    # guess the secret byte-by-byte; encoded to bytes since compare_digest
+    # rejects non-ASCII str, and a hostile header can be anything.
+    if secret_header is None or not hmac.compare_digest(
+        secret_header.encode(), cfg.telegram_webhook_secret.encode()
+    ):
         return 403
 
     try:

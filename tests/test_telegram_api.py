@@ -149,3 +149,13 @@ def test_set_webhook_error_never_contains_bot_token() -> None:
         with pytest.raises(TelegramApiError) as excinfo:
             set_webhook(token=token, url="https://x.vercel.app/api/webhook", secret_token="s")
     assert token not in str(excinfo.value)
+
+
+def test_chunk_message_hard_splits_text_with_no_boundaries() -> None:
+    """The `cut <= 0` last-resort branch: a single unbroken run longer than
+    the limit (no paragraph/line/word boundary to prefer) must still come
+    back in <= limit chunks with no character lost."""
+    text = "x" * 10_000
+    chunks = chunk_message(text)
+    assert all(len(c) <= 4096 for c in chunks)
+    assert "".join(chunks) == text

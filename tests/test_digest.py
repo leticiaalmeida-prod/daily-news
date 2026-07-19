@@ -350,3 +350,21 @@ def test_comprehend_prompt_fences_and_caps_untrusted_input() -> None:
     assert "temperature" not in call  # creative stage stays at the default
     assert "<<<ARTICLES" in prompt and "ARTICLES>>>" in prompt
     assert _SENTINEL not in prompt
+
+
+def test_run_digest_empty_filter_short_circuits_before_comprehend() -> None:
+    """The `if not filtered` branch: when nothing survives the filter, the
+    run returns the empty-digest message and NEVER reaches comprehend — the
+    scripted LLM has exactly one response, so a comprehend call would raise
+    IndexError."""
+    filter_resp = _Response([_ToolUseBlock("submit_filtered", {"matches": []})])
+    llm = _FakeLLM([filter_resp])
+    with patch("bot.digest.fetch_rss_candidates", return_value=[]):
+        text = run_digest(
+            tools=FakeTopStoriesTools(),
+            llm=llm,
+            model="fake",
+            interests="nothing matches",
+            sections=("technology",),
+        )
+    assert text == "No stories cleared your interests filter today."

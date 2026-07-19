@@ -167,3 +167,10 @@ def test_handle_webhook_empty_body_still_returns_200(monkeypatch) -> None:
         status = handle_webhook("correct-secret", b"")
     assert status == 200
     mock_send.assert_not_called()
+
+
+def test_message_without_chat_id_returns_none() -> None:
+    """The `chat_id is None` branch — a malformed update must be ignored,
+    not crash the handler."""
+    update = {"update_id": 1, "message": {"from": {"id": 1}, "text": "hi"}}
+    assert _reply_for(update, _cfg(), limiter=None) is None

@@ -100,7 +100,7 @@ def _real_shaped_response(status_code: int, token: str) -> httpx.Response:
 
 
 def test_send_message_error_never_contains_bot_token() -> None:
-    token = "123456789:AAFakeTokenFakeTokenFakeTokenFakeXY"
+    token = "123456789:AAfake-short-token"
     with patch(
         "bot.telegram_api.httpx.post",
         return_value=_real_shaped_response(400, token),
@@ -118,7 +118,7 @@ def test_send_message_error_never_contains_bot_token() -> None:
 def test_send_message_error_keeps_debuggable_details() -> None:
     """Redaction must not destroy debuggability: status code and Telegram's
     own (token-free) error description survive."""
-    token = "123456789:AAFakeTokenFakeTokenFakeTokenFakeXY"
+    token = "123456789:AAfake-short-token"
     with patch(
         "bot.telegram_api.httpx.post",
         return_value=_real_shaped_response(400, token),
@@ -128,7 +128,7 @@ def test_send_message_error_keeps_debuggable_details() -> None:
 
 
 def test_send_message_transport_error_never_contains_bot_token() -> None:
-    token = "123456789:AAFakeTokenFakeTokenFakeTokenFakeXY"
+    token = "123456789:AAfake-short-token"
 
     def fake_post(url, json=None, timeout=None):
         raise httpx.ConnectError("boom", request=httpx.Request("POST", url))
@@ -141,7 +141,7 @@ def test_send_message_transport_error_never_contains_bot_token() -> None:
 
 
 def test_set_webhook_error_never_contains_bot_token() -> None:
-    token = "123456789:AAFakeTokenFakeTokenFakeTokenFakeXY"
+    token = "123456789:AAfake-short-token"
     with patch(
         "bot.telegram_api.httpx.post",
         return_value=_real_shaped_response(500, token),

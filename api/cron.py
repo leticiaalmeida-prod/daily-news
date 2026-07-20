@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from bot.archive import append_run  # noqa: E402
 from bot.config import BotConfig  # noqa: E402
 from bot.digest import run_digest  # noqa: E402
 from bot.interests import load_interests  # noqa: E402
@@ -45,8 +46,11 @@ def _run_and_send(cfg: BotConfig) -> None:
         model=cfg.model,
         interests=load_interests(),
         numbers=fetch_numbers_block(),
+        archive=append_run,  # best-effort JSONL logbook (see bot/archive.py)
     )
-    send_chunked(token=cfg.telegram_token, chat_id=cfg.telegram_chat_id, text=digest_text)
+    send_chunked(
+        token=cfg.telegram_token, chat_id=cfg.telegram_chat_id, text=digest_text
+    )
 
 
 def handle_cron(auth_header: str | None) -> int:
@@ -56,7 +60,9 @@ def handle_cron(auth_header: str | None) -> int:
     if (
         not cron_secret
         or auth_header is None
-        or not hmac.compare_digest(auth_header.encode(), f"Bearer {cron_secret}".encode())
+        or not hmac.compare_digest(
+            auth_header.encode(), f"Bearer {cron_secret}".encode()
+        )
     ):
         return 401
     _run_and_send(BotConfig.from_env())

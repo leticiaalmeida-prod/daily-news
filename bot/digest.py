@@ -23,10 +23,12 @@ need because it's conversational, not extractive.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
+from .archive import TokenUsage, build_record
 from .models import Candidate
 from .rss import RSS_TIMEOUT_S, fetch_rss_candidates
 from .sources import digest_rss_sources, load_sources
@@ -218,10 +220,12 @@ def filter_candidates(
     interests: str,
     candidates: list[Candidate],
     max_tokens: int = 2048,
+    usage: TokenUsage | None = None,
 ) -> list[tuple[Candidate, str]]:
     """One batched call: which candidates are worth showing, and at what
     first-pass relevance. Returns (candidate, relevance) pairs in the same
-    order the model returned them; unmatched candidates are dropped."""
+    order the model returned them; unmatched candidates are dropped.
+    ``usage``, if given, accumulates this call's token cost for the archive."""
     if not candidates:
         return []
     listing = "\n".join(
@@ -246,6 +250,8 @@ def filter_candidates(
         tool_choice={"type": "tool", "name": "submit_filtered"},
         messages=[{"role": "user", "content": prompt}],
     )
+    if usage is not None:
+        usage.add(response)
     parsed = _extract_tool_input(response, "submit_filtered")
     if not parsed:
         return []
@@ -269,10 +275,12 @@ def comprehend(
     candidate: Candidate,
     first_pass_relevance: str,
     max_tokens: int = 1024,
+    usage: TokenUsage | None = None,
 ) -> DigestItem | None:
     """One call per surviving article: summary, topic, (possibly revised)
     relevance, and the neutral explanation. Returns None on a malformed reply
-    rather than raising — a dropped story degrades the digest, not the run."""
+    rather than raising — a dropped story degrades the digest, not the run.
+    ``usage``, if given, accumulates this call's token cost for the archive."""
     prompt = (
         "Reader's interests profile:\n"
         f"{interests}\n\n"
@@ -293,6 +301,8 @@ def comprehend(
         tool_choice={"type": "tool", "name": "submit_comprehension"},
         messages=[{"role": "user", "content": prompt}],
     )
+    if usage is not None:
+        usage.add(response)
     parsed = _extract_tool_input(response, "submit_comprehension")
     if not parsed or parsed.get("relevance") not in RELEVANCE_ORDER:
         return None
@@ -377,6 +387,7 @@ def run_digest(
     sections: tuple[str, ...] = DEFAULT_SECTIONS,
     max_workers: int = COMPREHEND_MAX_WORKERS,
     numbers: str = "",
+    archive: Callable[[dict[str, Any]], None] | None = None,
 ) -> str:
     """The full pipeline: fetch -> filter -> comprehend -> format. Never raises
     on a per-article basis — a story that fails comprehension is skipped, not
@@ -396,12 +407,18 @@ def run_digest(
     a serverless function with a hard execution time limit, and a dozen-plus
     sequential LLM calls (one per surviving article) can plausibly exceed it.
     Order of ``items`` in the output isn't guaranteed to match filter order —
-    ``format_digest`` groups by relevance anyway, so this doesn't matter."""
+    ``format_digest`` groups by relevance anyway, so this doesn't matter.
+
+    ``archive``, if given, is called once at the end with a headline-metadata
+    record of the run (see bot/archive.py) — best-effort logbook, never on the
+    critical path of producing the digest text."""
+    usage = TokenUsage()
     candidates = fetch_candidates(tools, sections) + _registry_rss_candidates()
     filtered = filter_candidates(
-        llm=llm, model=model, interests=interests, candidates=candidates
+        llm=llm, model=model, interests=interests, candidates=candidates, usage=usage
     )
     if not filtered:
+        _archive_run(archive, candidates, [], model, usage)
         return _prepend_numbers(numbers, format_digest([]))
 
     def _comprehend_one(pair: tuple[Candidate, str]) -> DigestItem | None:
@@ -412,9 +429,35 @@ def run_digest(
             interests=interests,
             candidate=candidate,
             first_pass_relevance=relevance,
+            usage=usage,
         )
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         results = pool.map(_comprehend_one, filtered)
     items = [item for item in results if item is not None]
+    _archive_run(archive, candidates, items, model, usage)
     return _prepend_numbers(numbers, format_digest(items))
+
+
+def _archive_run(
+    archive: Callable[[dict[str, Any]], None] | None,
+    candidates: list[Candidate],
+    items: list[DigestItem],
+    model: str,
+    usage: TokenUsage,
+) -> None:
+    """Hand a metadata record to the archive sink, if one was provided.
+    Wrapped so a bad record/sink can never break the digest it's logging."""
+    if archive is None:
+        return
+    try:
+        record = build_record(
+            sources_fetched=sorted({c.section for c in candidates}),
+            candidate_count=len(candidates),
+            items=items,
+            model=model,
+            usage=usage,
+        )
+        archive(record)
+    except Exception:  # noqa: BLE001 - the logbook must never fail the run
+        return

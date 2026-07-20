@@ -415,3 +415,83 @@ def test_run_digest_prepends_numbers_block_verbatim() -> None:
         )
     assert text.startswith("MARKETS: TVL $1.0B")
     assert "No stories cleared your interests filter today." in text
+
+
+class _UsageResponse(_Response):
+    """A scripted response that also carries token usage, like Anthropic's."""
+
+    def __init__(self, content: list, input_tokens: int, output_tokens: int) -> None:
+        super().__init__(content)
+
+        class _U:
+            pass
+
+        self.usage = _U()
+        self.usage.input_tokens = input_tokens
+        self.usage.output_tokens = output_tokens
+
+
+def test_run_digest_archives_one_metadata_record_with_token_counts() -> None:
+    """The run leaves a logbook entry: sources, candidate count, selected
+    (headline metadata only), model, and token counts summed from
+    response.usage across filter + comprehend."""
+    filter_resp = _UsageResponse(
+        [_ToolUseBlock("submit_filtered", {"matches": [{"index": 0, "relevance": "must-read"}]})],
+        input_tokens=1000,
+        output_tokens=50,
+    )
+    comprehend_resp = _UsageResponse(
+        [
+            _ToolUseBlock(
+                "submit_comprehension",
+                {
+                    "why": "w",
+                    "summary": "s",
+                    "topic": "AI",
+                    "relevance": "must-read",
+                    "explanation_mode": "background_context",
+                    "neutral_explanation": "ctx",
+                },
+            )
+        ],
+        input_tokens=400,
+        output_tokens=120,
+    )
+    llm = _FakeLLM([filter_resp, comprehend_resp])
+
+    records: list[dict] = []
+    with patch("bot.digest.fetch_rss_candidates", return_value=[]):
+        run_digest(
+            tools=FakeTopStoriesTools(),
+            llm=llm,
+            model="claude-haiku-4-5",
+            interests="I like technology.",
+            sections=("technology",),
+            archive=records.append,
+        )
+
+    assert len(records) == 1
+    record = records[0]
+    assert record["candidate_count"] == 1
+    assert record["model"] == "claude-haiku-4-5"
+    assert record["prompt_tokens"] == 1400  # 1000 + 400
+    assert record["output_tokens"] == 170  # 50 + 120
+    assert record["selected"][0]["title"] == "technology headline"
+    assert record["selected"][0]["category"] == "must-read"
+    # Control-plane discipline: no article body/summary in the archive.
+    assert "abstract" not in json.dumps(record)
+
+
+def test_run_digest_without_archive_writes_nothing() -> None:
+    """archive defaults to None — existing behaviour, no logbook, no file."""
+    filter_resp = _Response([_ToolUseBlock("submit_filtered", {"matches": []})])
+    llm = _FakeLLM([filter_resp])
+    with patch("bot.digest.fetch_rss_candidates", return_value=[]):
+        text = run_digest(
+            tools=FakeTopStoriesTools(),
+            llm=llm,
+            model="fake",
+            interests="x",
+            sections=("technology",),
+        )
+    assert "No stories cleared" in text

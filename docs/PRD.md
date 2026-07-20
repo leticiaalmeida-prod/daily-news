@@ -166,7 +166,67 @@ too):**
 
 ---
 
-## (d) gecko-surf upgrade path: 0.4.7 → 0.4.13
+## (d) Cross-run dedup — never resend the same article, unless it changed
+
+**Problem.** (c) dedups *within* a single run (three feeds covering the same
+announcement today). Nothing stops the *next* run from sending an article
+already delivered — an RSS feed re-publishes an item, or a story sits at the
+top of NYT Top Stories for two days running. Today the bot has no memory of
+what it already sent, so the same headline can reach the reader twice.
+
+**Spec — persistent sent-index, checked before an article is scheduled for
+comprehension:**
+
+1. **Sent-index.** A small, durable key→value store, `canonical_url →
+   {content_hash, last_sent: date}`, separate from the per-run archive (b)
+   (that's an append-only log; this needs O(1) lookup, not a scan). Same
+   storage seam as (b): local `var/sent_index.json` in dev, the durable sink
+   chosen for (b) in prod.
+2. **Canonicalization.** Reuse (c)'s URL canonicalization (lowercase host,
+   strip fragment/tracking params, drop trailing slash) so the same article
+   under two URL variants still matches.
+3. **Content hash.** `sha256(normalize(title) + normalize(abstract))` —
+   cheap, no LLM involved. Computed at fetch time, before `filter_candidates`
+   (drops repeats before they cost tokens, same principle as (c)).
+4. **The rule.**
+   - Canonical URL **not** in the index → eligible, send as usual.
+   - Canonical URL **in** the index **and** hash unchanged → skip; it already
+     went out and nothing about it changed.
+   - Canonical URL **in** the index **but** hash changed → eligible again —
+     the source edited the headline/abstract (correction, update, "developing"
+     → final), so it's new information, not a repeat. Tag it in the digest as
+     "(updated)", reusing (c)'s `also_in`-style annotation.
+5. **Write-back.** After a run sends successfully, upsert every sent
+   article's `{canonical_url: {content_hash, last_sent}}` into the index —
+   best-effort, log-and-continue, same discipline as the archive so a write
+   failure never blocks the digest itself.
+6. **Bounded state.** Prune index entries older than N days (default 30) on
+   write, so the store doesn't grow forever — a story not seen again in a
+   month doesn't need to stay in memory.
+
+**Behavior rules.**
+- This is a *scheduling* filter, not a relevance judgment — it runs before
+  `filter_candidates`, alongside (c)'s same-run dedup, so the LLM never even
+  sees an unchanged repeat.
+- Applies to both the scheduled digest and `/news` — one sent-index, one
+  source of truth for "have we already told them this."
+- Fail open: if the sent-index read/write fails (sink unavailable), treat
+  everything as unseen rather than withholding the whole digest. An
+  occasional duplicate from an infra hiccup is acceptable; blocking the
+  digest to prevent one is not.
+
+**Tests.** Canonicalization matches (c)'s test fixtures; hash-unchanged
+skips; hash-changed re-admits with the "(updated)" tag; a sent-index write
+failure doesn't drop the run (fail-open); pruning removes entries past the
+retention window.
+
+**Depends on:** (a) registry for a consistent `Candidate` shape across
+sources; (b)'s durable-sink decision (reuse whatever prod picks for the
+archive).
+
+---
+
+## (e) gecko-surf upgrade path: 0.4.7 → 0.4.13
 
 From the gecko-surf CHANGELOG, what landed in between and what it means here:
 
@@ -244,5 +304,7 @@ efficiency/quality gaps, roughly in value order:
 1. **(b) archive** — smallest change, makes everything after it measurable.
 2. **(a) registry** — includes the RSS timeout fix; unblocks source #6..#N.
 3. **(c) dedup** — tuned with the archive's evidence.
-4. **(d) upgrade** — opportunistic, low risk, do alongside any of the above.
-5. Context-engineering items 1–3 — guided by (b)'s token numbers.
+4. **(d) cross-run dedup** — built on (c)'s canonicalization once it lands;
+   reuses (b)'s durable-sink decision for the sent-index.
+5. **(e) upgrade** — opportunistic, low risk, do alongside any of the above.
+6. Context-engineering items 1–3 — guided by (b)'s token numbers.

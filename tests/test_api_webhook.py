@@ -169,6 +169,30 @@ def test_handle_webhook_empty_body_still_returns_200(monkeypatch) -> None:
     mock_send.assert_not_called()
 
 
+def test_duplicate_update_id_is_processed_only_once(monkeypatch) -> None:
+    """Telegram re-delivering the same update (slow 200) must NOT re-run the
+    agent or re-send — that would double the LLM spend. The second delivery is
+    dropped, still 200 so Telegram stops retrying."""
+    from bot.bot import SeenUpdates
+
+    _set_env(monkeypatch)
+    body = json.dumps(_message_update(text="/news")).encode()
+    # A fresh guard isolates this test from the module-level singleton.
+    monkeypatch.setattr("api.webhook._SEEN", SeenUpdates(max_size=8))
+    with (
+        patch("api.webhook.make_llm", return_value="fake-llm"),
+        patch("api.webhook.build_nyt_tools", return_value="fake-tools"),
+        patch("api.webhook.agent.respond", return_value="the news") as mock_respond,
+        patch("api.webhook.send_chunked") as mock_send,
+    ):
+        first = handle_webhook("correct-secret", body)
+        second = handle_webhook("correct-secret", body)  # redelivery
+
+    assert first == 200 and second == 200
+    mock_respond.assert_called_once()  # agent ran once, not twice
+    mock_send.assert_called_once()  # one reply, not two
+
+
 def test_message_without_chat_id_returns_none() -> None:
     """The `chat_id is None` branch — a malformed update must be ignored,
     not crash the handler."""

@@ -13,13 +13,12 @@ offline with no network and no Telegram/Anthropic SDK involved.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable
 
 from .agent import FALLBACK
 
-RATE_LIMIT_MSG = (
-    "You're sending requests too fast. Wait a few seconds and try again."
-)
+RATE_LIMIT_MSG = "You're sending requests too fast. Wait a few seconds and try again."
 WELCOME_MSG = (
     "I'm your daily news bot. Every morning I'll send a digest of NYT + "
     "crypto RSS news (CoinDesk, The Block, Blockworks) filtered to your "
@@ -33,7 +32,7 @@ HELP_MSG = (
     "Commands:\n"
     "/news — get an on-demand news check-in, filtered to your interests\n"
     "/help — this message\n\n"
-    "Or just ask in plain language, e.g. \"anything new on AI regulation?\""
+    'Or just ask in plain language, e.g. "anything new on AI regulation?"'
 )
 NEWS_QUERY = (
     "Give me the most relevant news right now, filtered to my stated interests."
@@ -67,6 +66,36 @@ class RateLimiter:
         window.append(now)
         self._hits[user_id] = window
         return True
+
+
+class SeenUpdates:
+    """Idempotency guard for Telegram webhook re-delivery.
+
+    Telegram RE-DELIVERS an update if the webhook doesn't answer 200 fast
+    enough — and this webhook runs up to ``max_iters`` LLM calls plus NYT
+    fetches BEFORE it answers, so a redelivery would re-run the agent and
+    DOUBLE the LLM spend (and send a duplicate reply). ``seen(update_id)``
+    returns True for an id already handled, so the caller can drop it.
+
+    api/webhook.py holds ONE instance at MODULE level (not per-request) — same
+    warm-instance trick as ``RateLimiter``: it persists across Vercel's reused
+    function invocations. Best-effort, not guaranteed — a cold start or a
+    scaled-out concurrent instance starts empty — but it covers the common
+    fast-redelivery case, which is the one that actually happens. Bounded
+    (LRU eviction) so it can't grow without limit on a long-lived instance.
+    """
+
+    def __init__(self, max_size: int = 512) -> None:
+        self.max_size = max_size
+        self._ids: OrderedDict[int, None] = OrderedDict()
+
+    def seen(self, update_id: int) -> bool:
+        if update_id in self._ids:
+            return True
+        self._ids[update_id] = None
+        if len(self._ids) > self.max_size:
+            self._ids.popitem(last=False)  # evict the oldest
+        return False
 
 
 def handle_message(

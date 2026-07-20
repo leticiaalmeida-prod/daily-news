@@ -32,7 +32,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bot import agent  # noqa: E402
-from bot.bot import WELCOME_MSG, RateLimiter, handle_command, handle_message  # noqa: E402
+from bot.bot import (  # noqa: E402
+    WELCOME_MSG,
+    RateLimiter,
+    SeenUpdates,
+    handle_command,
+    handle_message,
+)
 from bot.config import SYSTEM_PROMPT, BotConfig  # noqa: E402
 from bot.interests import load_interests  # noqa: E402
 from bot.providers import make_llm  # noqa: E402
@@ -44,6 +50,10 @@ SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 # Module-level (not per-request) so it persists across warm invocations — see
 # module docstring. 8/min matches the reference bot's PER_CHAT_PER_MIN.
 _LIMITER = RateLimiter(max_per_min=8)
+
+# Same warm-instance trick: drops a Telegram redelivery of an update we already
+# handled, so a slow 200 can't double the LLM spend. See SeenUpdates.
+_SEEN = SeenUpdates(max_size=512)
 
 
 def _system_prompt() -> str:
@@ -116,6 +126,12 @@ def handle_webhook(secret_header: str | None, body: bytes) -> int:
         update = json.loads(body) if body else {}
     except json.JSONDecodeError:
         return 400
+
+    # Drop a redelivery of an update we've already handled (Telegram retries a
+    # slow 200). Still 200 so Telegram stops retrying. See SeenUpdates.
+    update_id = update.get("update_id") if isinstance(update, dict) else None
+    if isinstance(update_id, int) and _SEEN.seen(update_id):
+        return 200
 
     result = _reply_for(update, cfg)
     if result is not None:

@@ -35,6 +35,7 @@ def test_generates_and_sends_digest_when_chat_id_set() -> None:
     with (
         patch("api.cron.make_llm", return_value="fake-llm") as mock_make_llm,
         patch("api.cron.build_nyt_tools", return_value="fake-tools"),
+        patch("api.cron.fetch_numbers_block", return_value="📊 nums"),
         patch("api.cron.run_digest", return_value="the digest text") as mock_run_digest,
         patch("api.cron.send_chunked") as mock_send,
     ):
@@ -43,7 +44,26 @@ def test_generates_and_sends_digest_when_chat_id_set() -> None:
     mock_make_llm.assert_called_once_with("anthropic")
     assert mock_run_digest.call_args.kwargs["tools"] == "fake-tools"
     assert mock_run_digest.call_args.kwargs["llm"] == "fake-llm"
+    # The deterministic numbers block is computed in cron and passed through.
+    assert mock_run_digest.call_args.kwargs["numbers"] == "📊 nums"
     mock_send.assert_called_once_with(token="TOKEN", chat_id="999", text="the digest text")
+
+
+def test_numbers_block_failure_never_breaks_the_digest() -> None:
+    """Fail-soft end to end: even if fetch_numbers_block itself raised, the
+    digest must still send. (It's built not to raise, but the cron must not
+    depend on that.)"""
+    with (
+        patch("api.cron.make_llm", return_value="fake-llm"),
+        patch("api.cron.build_nyt_tools", return_value="fake-tools"),
+        patch("api.cron.fetch_numbers_block", return_value=""),
+        patch("api.cron.run_digest", return_value="digest only") as mock_run_digest,
+        patch("api.cron.send_chunked") as mock_send,
+    ):
+        _run_and_send(_cfg(telegram_chat_id="999"))
+
+    assert mock_run_digest.call_args.kwargs["numbers"] == ""
+    mock_send.assert_called_once_with(token="TOKEN", chat_id="999", text="digest only")
 
 
 # --- handle_cron: the WSGI-agnostic entrypoint api/index.py dispatches to ---
@@ -58,6 +78,13 @@ def test_handle_cron_rejects_wrong_auth_header(monkeypatch) -> None:
     monkeypatch.setenv("CRON_SECRET", "right-secret")
     assert handle_cron("Bearer wrong-secret") == 401
     assert handle_cron(None) == 401
+
+
+def test_handle_cron_rejects_non_ascii_auth_header(monkeypatch) -> None:
+    """The constant-time comparison must reject a hostile non-ASCII header
+    with a 401, never crash — see api/webhook.py's secret check."""
+    monkeypatch.setenv("CRON_SECRET", "right-secret")
+    assert handle_cron("Bearer сёкрет-🔑") == 401
 
 
 def test_handle_cron_accepts_correct_bearer_token(monkeypatch) -> None:

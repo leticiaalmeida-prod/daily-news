@@ -1,0 +1,88 @@
+# The source registry — every news source the bot reads, as config.
+#
+# To ADD a feed: copy a [[source]] block below, change name + url, set
+#   enabled = true. No code, no logic deploy.
+# To PAUSE a feed: set enabled = false (it stays here, just isn't fetched).
+#
+# Fields:
+#   name              display name (also the digest "section" label for RSS)
+#   kind              "rss" (an XML/Atom feed) or "openapi" (a spec-driven API)
+#   enabled           false = keep the entry but don't fetch it
+#   digest            true = include in the scheduled daily digest
+#   interactive       true = expose to the on-demand /news agent
+#   url               (rss) the feed URL
+#   limit             (rss) max entries pulled per run
+#   spec              (openapi) path to the vendored OpenAPI/Swagger file
+#   allowlist         (openapi) which operations are callable
+#   auth              (openapi) NAME of the env var / keychain secret to use
+#                     (a reference — never the secret value itself)
+#   query_auth_param  (openapi) auth goes in this query param, not a header
+#   timeout_s         network timeout — a hung feed can't stall the digest
+
+# --- NYT (OpenAPI, api-key query-param auth) — general news + /news agent ---
+
+[[source]]
+name = "NYT Article Search"
+kind = "openapi"
+spec = "bot/spec/article_search_v2.json"
+allowlist = ["get__articlesearch_json"]
+auth = "NYT_API_KEY"
+query_auth_param = "api-key"
+digest = false        # search is on-demand only, not the scheduled fetch
+interactive = true
+
+[[source]]
+name = "NYT Top Stories"
+kind = "openapi"
+spec = "bot/spec/top_stories_v2.json"
+allowlist = ["get___section___format_"]
+auth = "NYT_API_KEY"
+query_auth_param = "api-key"
+digest = true
+interactive = true
+
+# --- Crypto / web3 RSS feeds (keyless, digest-only) -------------------------
+
+[[source]]
+name = "CoinDesk"
+kind = "rss"
+url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
+digest = true
+interactive = false
+
+[[source]]
+name = "The Block"
+kind = "rss"
+url = "https://www.theblock.co/rss.xml"
+digest = true
+interactive = false
+
+[[source]]
+name = "Blockworks"
+kind = "rss"
+url = "https://blockworks.co/feed"
+digest = true
+interactive = false
+
+# --- New wave: DeFi editorial + Solana ecosystem (keyless, digest-only) -----
+
+[[source]]
+name = "The Defiant"
+kind = "rss"
+url = "https://thedefiant.io/api/feed"
+digest = true
+interactive = false
+
+[[source]]
+name = "Solana Foundation News"
+kind = "rss"
+url = "https://solana.com/news/rss.xml"
+digest = true
+interactive = false
+
+[[source]]
+name = "Agave releases"
+kind = "rss"
+url = "https://github.com/anza-xyz/agave/releases.atom"
+digest = true
+interactive = false

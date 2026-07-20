@@ -27,34 +27,54 @@ scope).
 
 from __future__ import annotations
 
+import socket
+from contextlib import contextmanager
+from typing import Iterator
+
 import feedparser
 
 from .models import Candidate
 
-RSS_FEEDS: tuple[tuple[str, str], ...] = (
-    ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
-    ("The Block", "https://www.theblock.co/rss.xml"),
-    ("Blockworks", "https://blockworks.co/feed"),
-)
+# Which feeds to pull is now config, not code — see bot/sources.toml and
+# bot/sources.py. This module stays the pure RSS fetch ENGINE: callers pass
+# the (name, url) pairs; the digest builds them from the registry.
 
 RSS_LIMIT_PER_FEED = 20
+RSS_TIMEOUT_S = 10.0
+
+
+@contextmanager
+def _socket_timeout(seconds: float) -> Iterator[None]:
+    """Bound feedparser's network fetch with a timeout. feedparser.parse(url)
+    fetches via urllib with NO timeout by default, so a hung feed would stall
+    the whole (unattended, time-limited) cron run. urllib honours the default
+    socket timeout, so set it for the duration of one parse and restore it."""
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(previous)
 
 
 def fetch_rss_candidates(
-    feeds: tuple[tuple[str, str], ...] = RSS_FEEDS,
+    feeds: tuple[tuple[str, str], ...],
     *,
     limit_per_feed: int = RSS_LIMIT_PER_FEED,
+    timeout_s: float = RSS_TIMEOUT_S,
 ) -> list[Candidate]:
     """Pull the most recent entries from each feed. Never raises — a feed
-    that's unreachable or fails to parse is silently skipped (feedparser
-    itself doesn't raise on a bad URL/malformed XML; it returns an empty
-    ``entries`` list with `bozo` set, which naturally yields zero candidates
-    here, but network errors at the transport layer are still guarded
-    defensively since this runs unattended on a schedule)."""
+    that's unreachable, times out, or fails to parse is silently skipped
+    (feedparser itself doesn't raise on a bad URL/malformed XML; it returns an
+    empty ``entries`` list with `bozo` set, which naturally yields zero
+    candidates here, but network errors at the transport layer are still
+    guarded defensively since this runs unattended on a schedule).
+    ``timeout_s`` bounds each feed's network fetch (see ``_socket_timeout``)."""
     candidates: list[Candidate] = []
     for source_name, url in feeds:
         try:
-            parsed = feedparser.parse(url)
+            with _socket_timeout(timeout_s):
+                parsed = feedparser.parse(url)
             entries = parsed.entries[:limit_per_feed]
         except Exception:  # noqa: BLE001 - one bad feed shouldn't skip the rest
             continue

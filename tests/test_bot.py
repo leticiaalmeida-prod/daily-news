@@ -84,3 +84,27 @@ def test_handle_message_with_no_limiter_skips_rate_check() -> None:
     """api/webhook.py's case — stateless serverless, no persistent limiter."""
     reply = handle_message("hi", 1, responder=lambda t: f"got: {t}", limiter=None, now=0.0)
     assert reply == "got: hi"
+
+
+# --- SeenUpdates: idempotency guard against Telegram re-delivering a webhook
+# (which would otherwise re-run the agent and double the LLM spend). ---
+
+
+def test_seen_updates_reports_first_time_false_then_true() -> None:
+    from bot.bot import SeenUpdates
+
+    seen = SeenUpdates(max_size=100)
+    assert seen.seen(555) is False  # first time — process it
+    assert seen.seen(555) is True  # redelivery — drop it
+    assert seen.seen(556) is False  # a different update is independent
+
+
+def test_seen_updates_evicts_oldest_when_over_capacity() -> None:
+    from bot.bot import SeenUpdates
+
+    seen = SeenUpdates(max_size=2)
+    seen.seen(1)
+    seen.seen(2)
+    seen.seen(3)  # evicts 1 (oldest)
+    assert seen.seen(1) is False  # 1 was forgotten -> treated as new again
+    assert seen.seen(3) is True  # 3 is still remembered

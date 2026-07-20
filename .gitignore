@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 .vercel
 .env*
+# Local run archive (JSONL logbook) — run data, not source. See bot/archive.py.
+var/

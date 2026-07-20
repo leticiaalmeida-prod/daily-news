@@ -131,6 +131,21 @@ def test_handle_webhook_rejects_wrong_secret(monkeypatch) -> None:
     assert status == 403
 
 
+def test_handle_webhook_rejects_missing_secret_header(monkeypatch) -> None:
+    """Telegram always sends the header once set_webhook registered it — a
+    request WITHOUT it is by definition not from Telegram."""
+    _set_env(monkeypatch)
+    assert handle_webhook(None, b"{}") == 403
+
+
+def test_handle_webhook_rejects_non_ascii_secret_header(monkeypatch) -> None:
+    """A hostile header can contain anything; the constant-time comparison
+    must reject it with a 403, never crash (compare_digest rejects non-ASCII
+    str, hence the bytes encoding in handle_webhook)."""
+    _set_env(monkeypatch)
+    assert handle_webhook("сёкрет-🔑", b"{}") == 403
+
+
 def test_handle_webhook_rejects_invalid_json(monkeypatch) -> None:
     _set_env(monkeypatch)
     status = handle_webhook("correct-secret", b"not json")
@@ -152,3 +167,34 @@ def test_handle_webhook_empty_body_still_returns_200(monkeypatch) -> None:
         status = handle_webhook("correct-secret", b"")
     assert status == 200
     mock_send.assert_not_called()
+
+
+def test_duplicate_update_id_is_processed_only_once(monkeypatch) -> None:
+    """Telegram re-delivering the same update (slow 200) must NOT re-run the
+    agent or re-send — that would double the LLM spend. The second delivery is
+    dropped, still 200 so Telegram stops retrying."""
+    from bot.bot import SeenUpdates
+
+    _set_env(monkeypatch)
+    body = json.dumps(_message_update(text="/news")).encode()
+    # A fresh guard isolates this test from the module-level singleton.
+    monkeypatch.setattr("api.webhook._SEEN", SeenUpdates(max_size=8))
+    with (
+        patch("api.webhook.make_llm", return_value="fake-llm"),
+        patch("api.webhook.build_nyt_tools", return_value="fake-tools"),
+        patch("api.webhook.agent.respond", return_value="the news") as mock_respond,
+        patch("api.webhook.send_chunked") as mock_send,
+    ):
+        first = handle_webhook("correct-secret", body)
+        second = handle_webhook("correct-secret", body)  # redelivery
+
+    assert first == 200 and second == 200
+    mock_respond.assert_called_once()  # agent ran once, not twice
+    mock_send.assert_called_once()  # one reply, not two
+
+
+def test_message_without_chat_id_returns_none() -> None:
+    """The `chat_id is None` branch — a malformed update must be ignored,
+    not crash the handler."""
+    update = {"update_id": 1, "message": {"from": {"id": 1}, "text": "hi"}}
+    assert _reply_for(update, _cfg(), limiter=None) is None

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from bot.config import BotConfig  # noqa: E402
 from bot.digest import run_digest  # noqa: E402
 from bot.interests import load_interests  # noqa: E402
+from bot.numbers import fetch_numbers_block  # noqa: E402
 from bot.providers import make_llm  # noqa: E402
 from bot.surfcall_tools import build_nyt_tools  # noqa: E402
 from bot.telegram_api import send_chunked  # noqa: E402
@@ -28,13 +29,22 @@ from bot.telegram_api import send_chunked  # noqa: E402
 
 def _run_and_send(cfg: BotConfig) -> None:
     """Generate the digest and push it, or do nothing if there's no chat ID
-    yet (before the first /start) — never an error, just nothing to send to."""
+    yet (before the first /start) — never an error, just nothing to send to.
+
+    The deterministic numbers block (market data) is computed HERE, outside
+    run_digest, and prepended — it never touches the LLM pipeline (see
+    bot/numbers.py). It's fail-soft: if every market source is down it renders
+    as an empty string and the digest sends without it."""
     if not cfg.telegram_chat_id:
         return
     llm = make_llm(cfg.anthropic_api_key)
     tools = build_nyt_tools(nyt_api_key=cfg.nyt_api_key, mode=cfg.mode)
     digest_text = run_digest(
-        tools=tools, llm=llm, model=cfg.model, interests=load_interests()
+        tools=tools,
+        llm=llm,
+        model=cfg.model,
+        interests=load_interests(),
+        numbers=fetch_numbers_block(),
     )
     send_chunked(token=cfg.telegram_token, chat_id=cfg.telegram_chat_id, text=digest_text)
 

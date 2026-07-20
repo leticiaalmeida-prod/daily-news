@@ -368,3 +368,50 @@ def test_run_digest_empty_filter_short_circuits_before_comprehend() -> None:
             sections=("technology",),
         )
     assert text == "No stories cleared your interests filter today."
+
+
+def test_run_digest_pulls_rss_feeds_from_the_registry() -> None:
+    """The new feeds (The Defiant, Solana Foundation, Agave) reach a digest
+    run purely as config: run_digest builds its RSS feed list from
+    bot/sources.toml, so they show up in the (name, url) pairs handed to the
+    fetch engine — no code change needed to add them. Offline: the engine is
+    spied, never called for real."""
+    captured: dict = {}
+
+    def fake_fetch(feeds, *, limit_per_feed=20, timeout_s=10.0):
+        captured["names"] = [name for name, _url in feeds]
+        return []
+
+    filter_resp = _Response([_ToolUseBlock("submit_filtered", {"matches": []})])
+    llm = _FakeLLM([filter_resp])
+    with patch("bot.digest.fetch_rss_candidates", side_effect=fake_fetch):
+        run_digest(
+            tools=FakeTopStoriesTools(),
+            llm=llm,
+            model="fake",
+            interests="x",
+            sections=("technology",),
+        )
+    for name in ("The Defiant", "Solana Foundation News", "Agave releases"):
+        assert name in captured["names"]
+    # The original crypto feeds are still there too (migration was 1:1).
+    for name in ("CoinDesk", "The Block", "Blockworks"):
+        assert name in captured["names"]
+
+
+def test_run_digest_prepends_numbers_block_verbatim() -> None:
+    """The deterministic numbers block sits above the digest and does NOT pass
+    through filter/comprehend (it's given, not generated)."""
+    filter_resp = _Response([_ToolUseBlock("submit_filtered", {"matches": []})])
+    llm = _FakeLLM([filter_resp])
+    with patch("bot.digest.fetch_rss_candidates", return_value=[]):
+        text = run_digest(
+            tools=FakeTopStoriesTools(),
+            llm=llm,
+            model="fake",
+            interests="x",
+            sections=("technology",),
+            numbers="MARKETS: TVL $1.0B",
+        )
+    assert text.startswith("MARKETS: TVL $1.0B")
+    assert "No stories cleared your interests filter today." in text

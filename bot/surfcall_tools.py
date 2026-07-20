@@ -69,6 +69,7 @@ example synthesizer reads.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -78,6 +79,8 @@ from gecko.client import AgentApiClient
 from gecko.ingest import load_spec
 from gecko.mcp_server import McpSurface
 from gecko.modes import CallMode
+
+from .sources import SourceSpec
 
 # Tool names as synthesized by gecko-surf from each spec. Neither NYT spec sets
 # `operationId`, so gecko-surf derives `{method}_{path}` and sanitizes it (see
@@ -333,32 +336,43 @@ class MultiSurfaceTools:
         return surface.call(name, args)
 
 
+def build_openapi_tools(
+    sources: list[SourceSpec], *, mode: CallMode, key_for: Callable[[SourceSpec], str]
+) -> MultiSurfaceTools:
+    """Build a combined surface from OpenAPI source-registry entries. Each
+    source's ``allowlist`` scopes it to its declared operations; a
+    ``query_auth_param`` routes auth through the query string (NYT's case, see
+    module docstring), otherwise gecko-surf's native header injection applies.
+    ``key_for`` resolves the secret VALUE for a source from its ``auth`` ref —
+    kept out of this module so no secret is read here."""
+    surfaces: list[SurfcallTools] = []
+    for source in sources:
+        assert source.spec is not None  # openapi sources always carry a spec
+        query_auth = (
+            (source.query_auth_param, key_for(source))
+            if source.query_auth_param
+            else None
+        )
+        surfaces.append(
+            SurfcallTools(
+                source.spec,
+                session=_UnlockSession(),
+                mode=mode,
+                allowlist=set(source.allowlist),
+                query_auth=query_auth,
+            )
+        )
+    return MultiSurfaceTools(surfaces)
+
+
 def build_nyt_tools(*, nyt_api_key: str, mode: CallMode = "live") -> MultiSurfaceTools:
-    """The NYT surface: Article Search + Top Stories, each scoped to its own
-    single tool via ``allowlist`` (defensive even though each spec only has
-    one operation today). Query-string auth workaround (see module
-    docstring): both specs are Swagger 2.0 and gecko-surf can't inject
-    NYT's `api-key` natively."""
-    from .config import ARTICLE_SEARCH_SPEC_PATH, TOP_STORIES_SPEC_PATH
+    """The NYT surface (Article Search + Top Stories), built from the source
+    registry (bot/sources.toml) rather than hardcoded here — adding an OpenAPI
+    source is now config. Every NYT read authenticates via the same
+    ``NYT_API_KEY`` query param, so the key is shared across them. Query-string
+    auth workaround (see module docstring): both specs are Swagger 2.0 and
+    gecko-surf can't inject NYT's `api-key` natively."""
+    from .sources import load_sources
 
-    query_auth = (_NYT_API_KEY_PARAM, nyt_api_key)
-    return MultiSurfaceTools(
-        [
-            SurfcallTools(
-                ARTICLE_SEARCH_SPEC_PATH,
-                session=_UnlockSession(),
-                mode=mode,
-                allowlist={ARTICLE_SEARCH_TOOL},
-                query_auth=query_auth,
-            ),
-            SurfcallTools(
-                TOP_STORIES_SPEC_PATH,
-                session=_UnlockSession(),
-                mode=mode,
-                allowlist={TOP_STORIES_TOOL},
-                query_auth=query_auth,
-            ),
-        ]
-    )
-
-
+    sources = [s for s in load_sources() if s.kind == "openapi" and s.enabled]
+    return build_openapi_tools(sources, mode=mode, key_for=lambda _s: nyt_api_key)

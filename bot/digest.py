@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .models import Candidate
-from .rss import fetch_rss_candidates
+from .rss import RSS_TIMEOUT_S, fetch_rss_candidates
+from .sources import digest_rss_sources, load_sources
 from .surfcall_tools import TOP_STORIES_TOOL, ToolProvider
 
 DEFAULT_SECTIONS: tuple[str, ...] = (
@@ -346,6 +347,27 @@ def format_digest(items: list[DigestItem]) -> str:
 COMPREHEND_MAX_WORKERS = 8
 
 
+def _registry_rss_candidates() -> list[Candidate]:
+    """The RSS feeds to pull, read from the source registry (bot/sources.toml)
+    instead of a hardcoded tuple — adding a feed is now editing config, not
+    this code. ``rss.py`` stays the fetch engine; this only supplies the
+    (name, url) pairs and each feed's timeout."""
+    specs = digest_rss_sources(load_sources())
+    feeds = tuple((s.name, s.url) for s in specs if s.url)
+    if not feeds:
+        return []
+    # All current feeds share the default timeout; use the smallest declared
+    # so one slow feed can't exceed any feed's stated budget.
+    timeout_s = min((s.timeout_s for s in specs), default=RSS_TIMEOUT_S)
+    return fetch_rss_candidates(feeds, timeout_s=timeout_s)
+
+
+def _prepend_numbers(numbers: str, body: str) -> str:
+    """Put the deterministic numbers block (if any) above the digest body."""
+    numbers = numbers.strip()
+    return f"{numbers}\n\n{body}" if numbers else body
+
+
 def run_digest(
     *,
     tools: ToolProvider,
@@ -354,12 +376,19 @@ def run_digest(
     interests: str,
     sections: tuple[str, ...] = DEFAULT_SECTIONS,
     max_workers: int = COMPREHEND_MAX_WORKERS,
+    numbers: str = "",
 ) -> str:
     """The full pipeline: fetch -> filter -> comprehend -> format. Never raises
     on a per-article basis — a story that fails comprehension is skipped, not
     fatal to the whole digest. Candidates come from NYT (via ``tools``, gecko-
-    surf) and RSS (CoinDesk/The Block/Blockworks, plain XML — see rss.py for
+    surf) and the RSS feeds in the source registry (plain XML — see rss.py for
     why crypto coverage isn't a gecko-surf tool).
+
+    ``numbers`` is a DETERMINISTIC market-data block (see bot/numbers.py). It
+    is prepended to the output verbatim and deliberately does NOT pass through
+    filter/comprehend — it's factual numbers, with nothing to de-bias or
+    summarise. The caller (api/cron.py) computes it; run_digest stays offline
+    and pure so it's testable without a network.
 
     ``comprehend`` calls run CONCURRENTLY (thread pool, not sequential) — each
     is an independent network call, so this is a real wall-clock win, not
@@ -368,12 +397,12 @@ def run_digest(
     sequential LLM calls (one per surviving article) can plausibly exceed it.
     Order of ``items`` in the output isn't guaranteed to match filter order —
     ``format_digest`` groups by relevance anyway, so this doesn't matter."""
-    candidates = fetch_candidates(tools, sections) + fetch_rss_candidates()
+    candidates = fetch_candidates(tools, sections) + _registry_rss_candidates()
     filtered = filter_candidates(
         llm=llm, model=model, interests=interests, candidates=candidates
     )
     if not filtered:
-        return format_digest([])
+        return _prepend_numbers(numbers, format_digest([]))
 
     def _comprehend_one(pair: tuple[Candidate, str]) -> DigestItem | None:
         candidate, relevance = pair
@@ -388,4 +417,4 @@ def run_digest(
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         results = pool.map(_comprehend_one, filtered)
     items = [item for item in results if item is not None]
-    return format_digest(items)
+    return _prepend_numbers(numbers, format_digest(items))

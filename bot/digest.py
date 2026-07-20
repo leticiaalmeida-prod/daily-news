@@ -23,6 +23,7 @@ need because it's conversational, not extractive.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -323,6 +324,23 @@ _RELEVANCE_HEADERS = {
     "tangential": "🔍 TANGENTIAL",
 }
 
+# A colon not followed by "//" (so a URL's scheme, e.g. "https://", is left
+# alone) marks a label/detail boundary worth its own line.
+_COLON_BREAK_RE = re.compile(r":(?!//)")
+
+
+def _break_after_colon(paragraph: str) -> str:
+    """On top of the blank-line spacing between paragraphs, break a single
+    paragraph onto a second line right after its first colon, so a
+    "Label: detail" sentence reads as two lines instead of a wall of text."""
+    match = _COLON_BREAK_RE.search(paragraph)
+    if not match:
+        return paragraph
+    head, tail = paragraph[: match.end()], paragraph[match.end() :].lstrip()
+    if not tail:
+        return paragraph
+    return f"{head}\n{tail}"
+
 
 def _format_story(item: DigestItem) -> str:
     return "\n\n".join(
@@ -338,9 +356,10 @@ def _format_story(item: DigestItem) -> str:
 
 def format_digest(items: list[DigestItem]) -> str:
     """Plain-text digest, grouped by relevance (must-read first) under an
-    emoji-labeled header, with a full blank line between every paragraph.
-    Telegram doesn't render Markdown reliably here, so spacing + emoji carry
-    the visual structure instead of ``**``/``#``."""
+    emoji-labeled header, with a full blank line between every paragraph and
+    each paragraph itself broken onto a second line right after its first
+    colon. Telegram doesn't render Markdown reliably here, so spacing + emoji
+    carry the visual structure instead of ``**``/``#``."""
     if not items:
         return "No stories cleared your interests filter today."
     by_relevance = {r: [i for i in items if i.relevance == r] for r in RELEVANCE_ORDER}
@@ -351,7 +370,8 @@ def format_digest(items: list[DigestItem]) -> str:
             continue
         body = "\n\n".join(_format_story(item) for item in group)
         sections.append(f"{_RELEVANCE_HEADERS[relevance]}\n\n{body}")
-    return "\n\n".join(sections)
+    text = "\n\n".join(sections)
+    return "\n\n".join(_break_after_colon(p) for p in text.split("\n\n"))
 
 
 COMPREHEND_MAX_WORKERS = 8

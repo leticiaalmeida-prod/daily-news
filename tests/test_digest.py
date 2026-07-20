@@ -172,6 +172,39 @@ def test_format_digest_includes_article_url() -> None:
     assert "https://example.com/story" in format_digest([item])
 
 
+def test_format_digest_breaks_line_after_first_colon() -> None:
+    from bot.digest import DigestItem
+
+    item = DigestItem(
+        Candidate("T", "a", "u", "s"),
+        "Context: this changes the funding picture for validators",
+        "sum",
+        "topic",
+        "must-read",
+        "background_context",
+        "ctx",
+    )
+    text = format_digest([item])
+    assert "Context:\nthis changes the funding picture for validators" in text
+
+
+def test_format_digest_does_not_break_a_url_scheme_colon() -> None:
+    from bot.digest import DigestItem
+
+    item = DigestItem(
+        Candidate("T", "a", "https://example.com/story", "s"),
+        "why",
+        "sum",
+        "topic",
+        "must-read",
+        "background_context",
+        "ctx",
+    )
+    text = format_digest([item])
+    assert "https:\n//example.com/story" not in text
+    assert "https://example.com/story" in text
+
+
 # run_digest also fetches RSS (bot.rss.fetch_rss_candidates, hits live network
 # for real feed URLs) — patched to an empty/canned list in every test here so
 # the suite stays offline/$0. See test_rss.py for RSS-specific coverage.
